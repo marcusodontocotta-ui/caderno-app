@@ -1,13 +1,14 @@
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from datetime import datetime
 
-from database import init_db, get_db, User, Notebook, Page
+from database import init_db, get_db, User, Notebook, Page, Subscription
 from auth import hash_password, verify_password, create_access_token, get_current_user
 from config import settings
+from billing import create_preapproval, get_preapproval, get_payment, activate_user_premium, verify_signature
 
 app = FastAPI(title="Caderno de Estudos API")
 
@@ -199,3 +200,68 @@ def delete_page(notebook_id: int, page_id: int, user: User = Depends(get_current
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+# ---------------- Billing / Mercado Pago ----------------
+class CheckoutResponse(BaseModel):
+    init_point: str
+    preapproval_id: Optional[str] = None
+
+
+class BillingStatus(BaseModel):
+    is_premium: bool
+    premium_until: Optional[str] = None
+
+
+@app.post("/billing/premium", response_model=CheckoutResponse)
+def subscribe_premium(user: User = Depends(get_current_user)):
+    data = create_preapproval(user)
+    init_point = data.get("init_point")
+    if not init_point:
+        raise HTTPException(status_code=502, detail="Nao foi possivel gerar o checkout")
+    return CheckoutResponse(
+        init_point=init_point,
+        preapproval_id=(data.get("id") or None),
+    )
+
+
+@app.post("/billing/webhook")
+async def billing_webhook(request: Request):
+    x_signature = request.headers.get("x-signature", "")
+    form = await request.form()
+    type_ = form.get("type", "")
+    data_id = form.get("data.id", "")
+
+    if settings.mp_webhook_secret and not verify_signature(x_signature, str(data_id), settings.mp_webhook_secret):
+        raise HTTPException(status_code=401, detail="Assinatura invalida")
+
+    db = next(get_db())
+    try:
+        if type_ == "preapproval" and data_id:
+            pa = get_preapproval(str(data_id))
+            status = pa.get("status", "")
+            ext = pa.get("external_reference", "") or ""
+            if status in ("authorized", "active") and ext.startswith("caderno:"):
+                try:
+                    user_id = int(ext.split(":")[1])
+                except (IndexError, ValueError):
+                    return {"ok": True}
+                activate_user_premium(db, user_id, str(data_id))
+        elif type_ == "payment" and data_id:
+            p = get_payment(str(data_id))
+            preapproval_id = p.get("preapproval_id")
+            if p.get("status") == "approved" and preapproval_id:
+                for sub in db.query(Subscription).filter(Subscription.mp_preapproval_id == str(preapproval_id)).all():
+                    if sub.user_id:
+                        activate_user_premium(db, sub.user_id, str(preapproval_id))
+        return {"ok": True}
+    finally:
+        db.close()
+
+
+@app.get("/billing/status", response_model=BillingStatus)
+def billing_status(user: User = Depends(get_current_user)):
+    return BillingStatus(
+        is_premium=user.is_premium,
+        premium_until=user.premium_until.isoformat() if user.premium_until else None,
+    )

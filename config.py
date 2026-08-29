@@ -8,6 +8,9 @@ class Settings(BaseSettings):
     access_token_expire_minutes: int = 60 * 24 * 30  # 30 dias
     mp_access_token: str = ""
     mp_public_key: str = ""
+    mp_webhook_secret: str = ""
+    mp_premium_amount: str = "4.90"
+    mp_back_url: str = "https://caderno-fy36.onrender.com"
 
     class Config:
         env_file = ".env"

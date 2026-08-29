@@ -16,6 +16,8 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     hashed_password = Column(String, nullable=False)
     is_premium = Column(Boolean, default=False)
+    premium_until = Column(DateTime, nullable=True)
+    mp_preapproval_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -34,6 +36,19 @@ class Page(Base):
     notebook_id = Column(Integer, index=True, nullable=False)
     position = Column(Integer, default=0)
     text = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, index=True, nullable=False)
+    mp_preapproval_id = Column(String, index=True, nullable=True)
+    status = Column(String, default="pending")
+    amount = Column(String, default="4.90")
+    currency_id = Column(String, default="BRL")
+    external_reference = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
