@@ -1,0 +1,201 @@
+from fastapi import FastAPI, Depends, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr
+from typing import List, Optional
+from sqlalchemy.orm import Session
+from datetime import datetime
+
+from database import init_db, get_db, User, Notebook, Page
+from auth import hash_password, verify_password, create_access_token, get_current_user
+from config import settings
+
+app = FastAPI(title="Caderno de Estudos API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("startup")
+def on_startup():
+    init_db()
+
+
+# ---------------- Schemas ----------------
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    email: str
+    is_premium: bool
+
+
+class PageOut(BaseModel):
+    id: int
+    position: int
+    text: str
+    updated_at: datetime
+
+
+class PageIn(BaseModel):
+    position: Optional[int] = None
+    text: Optional[str] = ""
+
+
+class NotebookIn(BaseModel):
+    name: str = "Novo caderno"
+
+
+class NotebookOut(BaseModel):
+    id: int
+    name: str
+    pages: List[PageOut] = []
+
+
+# ---------------- Auth ----------------
+@app.post("/auth/register", response_model=TokenResponse)
+def register(req: RegisterRequest, db: Session = Depends(get_db)):
+    existing = db.query(User).filter(User.email == req.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email ja cadastrado")
+    user = User(email=req.email, hashed_password=hash_password(req.password))
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+    return TokenResponse(
+        access_token=create_access_token(user.id),
+        email=user.email,
+        is_premium=user.is_premium,
+    )
+
+
+@app.post("/auth/login", response_model=TokenResponse)
+def login(req: LoginRequest, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.email == req.email).first()
+    if not user or not verify_password(req.password, user.hashed_password):
+        raise HTTPException(status_code=401, detail="Email ou senha incorretos")
+    return TokenResponse(
+        access_token=create_access_token(user.id),
+        email=user.email,
+        is_premium=user.is_premium,
+    )
+
+
+@app.get("/auth/me", response_model=TokenResponse)
+def me(user: User = Depends(get_current_user)):
+    return TokenResponse(
+        access_token="",
+        email=user.email,
+        is_premium=user.is_premium,
+    )
+
+
+# ---------------- Notebooks ----------------
+def _serialize_notebook(db, nb: Notebook) -> NotebookOut:
+    pages = db.query(Page).filter(Page.notebook_id == nb.id).order_by(Page.position).all()
+    return NotebookOut(
+        id=nb.id,
+        name=nb.name,
+        pages=[PageOut(id=p.id, position=p.position, text=p.text, updated_at=p.updated_at) for p in pages],
+    )
+
+
+@app.get("/notebooks", response_model=List[NotebookOut])
+def list_notebooks(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    nbs = db.query(Notebook).filter(Notebook.user_id == user.id).order_by(Notebook.updated_at.desc()).all()
+    return [_serialize_notebook(db, nb) for nb in nbs]
+
+
+@app.post("/notebooks", response_model=NotebookOut)
+def create_notebook(req: NotebookIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not user.is_premium:
+        count = db.query(Notebook).filter(Notebook.user_id == user.id).count()
+        if count >= 1:
+            raise HTTPException(status_code=402, detail="Plano gratuito limite de 1 caderno. Faca upgrade para premium.")
+    nb = Notebook(user_id=user.id, name=req.name)
+    db.add(nb)
+    db.commit()
+    db.refresh(nb)
+    # cria uma página inicial
+    page = Page(notebook_id=nb.id, position=0, text="<p></p>")
+    db.add(page)
+    db.commit()
+    return _serialize_notebook(db, nb)
+
+
+@app.put("/notebooks/{notebook_id}", response_model=NotebookOut)
+def rename_notebook(notebook_id: int, req: NotebookIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    nb = db.query(Notebook).filter(Notebook.id == notebook_id, Notebook.user_id == user.id).first()
+    if not nb:
+        raise HTTPException(status_code=404, detail="Caderno nao encontrado")
+    nb.name = req.name
+    db.commit()
+    return _serialize_notebook(db, nb)
+
+
+@app.delete("/notebooks/{notebook_id}")
+def delete_notebook(notebook_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    nb = db.query(Notebook).filter(Notebook.id == notebook_id, Notebook.user_id == user.id).first()
+    if not nb:
+        raise HTTPException(status_code=404, detail="Caderno nao encontrado")
+    db.query(Page).filter(Page.notebook_id == nb.id).delete()
+    db.delete(nb)
+    db.commit()
+    return {"ok": True}
+
+
+# ---------------- Pages ----------------
+@app.put("/notebooks/{notebook_id}/pages/{page_id}", response_model=PageOut)
+def update_page(notebook_id: int, page_id: int, req: PageIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    page = db.query(Page).filter(Page.id == page_id, Page.notebook_id == notebook_id).first()
+    if not page:
+        raise HTTPException(status_code=404, detail="Pagina nao encontrada")
+    if req.text is not None:
+        page.text = req.text
+    if req.position is not None:
+        page.position = req.position
+    page.updated_at = datetime.utcnow()
+    db.commit()
+    db.refresh(page)
+    return PageOut(id=page.id, position=page.position, text=page.text, updated_at=page.updated_at)
+
+
+@app.post("/notebooks/{notebook_id}/pages", response_model=PageOut)
+def add_page(notebook_id: int, req: PageIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    nb = db.query(Notebook).filter(Notebook.id == notebook_id, Notebook.user_id == user.id).first()
+    if not nb:
+        raise HTTPException(status_code=404, detail="Caderno nao encontrado")
+    max_pos = db.query(Page).filter(Page.notebook_id == notebook_id).count()
+    page = Page(notebook_id=notebook_id, position=max_pos, text=req.text or "<p></p>")
+    db.add(page)
+    db.commit()
+    db.refresh(page)
+    return PageOut(id=page.id, position=page.position, text=page.text, updated_at=page.updated_at)
+
+
+@app.delete("/notebooks/{notebook_id}/pages/{page_id}")
+def delete_page(notebook_id: int, page_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    page = db.query(Page).filter(Page.id == page_id, Page.notebook_id == notebook_id).first()
+    if not page:
+        raise HTTPException(status_code=404, detail="Pagina nao encontrada")
+    db.delete(page)
+    db.commit()
+    return {"ok": True}
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
