@@ -232,7 +232,8 @@ async def billing_webhook(request: Request):
     type_ = form.get("type", "")
     data_id = form.get("data.id", "")
 
-    if settings.mp_webhook_secret and not verify_signature(x_signature, str(data_id), settings.mp_webhook_secret):
+    secret = (settings.mp_webhook_secret or "").strip()
+    if secret and not verify_signature(x_signature, str(data_id), secret):
         raise HTTPException(status_code=401, detail="Assinatura invalida")
 
     db = next(get_db())
