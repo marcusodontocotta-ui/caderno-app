@@ -55,6 +55,41 @@ class Subscription(Base):
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+    _migrate()
+
+
+def _migrate():
+    """Migracoes idempotentes para bancos existentes (ex.: sisgersa compartilhado)."""
+    from sqlalchemy import text
+
+    is_postgres = engine.dialect.name == "postgresql"
+    with engine.begin() as conn:
+        if is_postgres:
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS premium_until TIMESTAMP WITHOUT TIME ZONE"
+            ))
+            conn.execute(text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS mp_preapproval_id VARCHAR"
+            ))
+            conn.execute(text(
+                """
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER,
+                    mp_preapproval_id VARCHAR,
+                    status VARCHAR,
+                    amount VARCHAR,
+                    currency_id VARCHAR,
+                    external_reference VARCHAR,
+                    created_at TIMESTAMP WITHOUT TIME ZONE,
+                    updated_at TIMESTAMP WITHOUT TIME ZONE
+                )
+                """
+            ))
+        else:
+            # SQLite: create_all ja reflete os novos models; nada a fazer aqui,
+            # pois o SQLite nao suporta ALTER TABLE ... IF NOT EXISTS via SQL.
+            pass
 
 
 def get_db():
