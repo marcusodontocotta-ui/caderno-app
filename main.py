@@ -8,7 +8,7 @@ from datetime import datetime
 from database import init_db, get_db, User, Notebook, Page, Subscription
 from auth import hash_password, verify_password, create_access_token, get_current_user
 from config import settings
-from billing import create_preapproval, get_preapproval, get_payment, activate_user_premium, verify_signature
+from billing import create_preapproval, get_preapproval, get_payment, activate_user_premium, deactivate_user_premium, verify_signature
 
 app = FastAPI(title="Caderno de Estudos API")
 
@@ -241,19 +241,29 @@ async def billing_webhook(request: Request):
             pa = get_preapproval(str(data_id))
             status = pa.get("status", "")
             ext = pa.get("external_reference", "") or ""
-            if status in ("authorized", "active") and ext.startswith("caderno:"):
+            if ext.startswith("caderno:"):
                 try:
                     user_id = int(ext.split(":")[1])
                 except (IndexError, ValueError):
                     return {"ok": True}
-                activate_user_premium(db, user_id, str(data_id))
+                if status in ("authorized", "active"):
+                    activate_user_premium(db, user_id, str(data_id))
+                elif status in ("cancelled", "paused"):
+                    deactivate_user_premium(db, user_id, status)
         elif type_ == "payment" and data_id:
             p = get_payment(str(data_id))
             preapproval_id = p.get("preapproval_id")
-            if p.get("status") == "approved" and preapproval_id:
-                for sub in db.query(Subscription).filter(Subscription.mp_preapproval_id == str(preapproval_id)).all():
-                    if sub.user_id:
-                        activate_user_premium(db, sub.user_id, str(preapproval_id))
+            pays_status = p.get("status")
+            if preapproval_id:
+                subs = db.query(Subscription).filter(Subscription.mp_preapproval_id == str(preapproval_id)).all()
+                if pays_status == "approved":
+                    for sub in subs:
+                        if sub.user_id:
+                            activate_user_premium(db, sub.user_id, str(preapproval_id))
+                elif pays_status in ("refunded", "chargeback", "cancelled"):
+                    for sub in subs:
+                        if sub.user_id:
+                            deactivate_user_premium(db, sub.user_id, pays_status)
         return {"ok": True}
     finally:
         db.close()

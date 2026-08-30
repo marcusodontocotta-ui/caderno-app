@@ -88,6 +88,26 @@ def activate_user_premium(db: Session, user_id: int, preapproval_id: str) -> Non
     db.commit()
 
 
+def deactivate_user_premium(db: Session, user_id: int, reason: str = "cancelled") -> None:
+    """Desativa o premium do usuário e marca a assinatura como cancelada/inativa."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        return
+    user.is_premium = False
+    user.premium_until = None
+    sub = (
+        db.query(Subscription)
+        .filter(Subscription.user_id == user_id, Subscription.mp_preapproval_id == user.mp_preapproval_id)
+        .first()
+    )
+    if not sub:
+        sub = db.query(Subscription).filter(Subscription.user_id == user_id).first()
+    if sub:
+        sub.status = reason
+        sub.updated_at = datetime.utcnow()
+    db.commit()
+
+
 def verify_signature(x_signature: str, data_id: str, secret: str) -> bool:
     """Valida x-signature (ts,v1) do Mercado Pago conforme documentacao."""
     try:

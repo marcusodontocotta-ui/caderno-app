@@ -40,4 +40,11 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
     user = db.query(User).filter(User.id == user_id).first()
     if user is None:
         raise credentials_exc
+    if user.is_premium and user.premium_until and user.premium_until < datetime.utcnow():
+        user.is_premium = False
+        user.premium_until = None
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
     return user
