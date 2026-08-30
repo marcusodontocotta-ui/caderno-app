@@ -9,6 +9,8 @@ from database import init_db, get_db, User, Notebook, Page, Subscription
 from auth import hash_password, verify_password, create_access_token, get_current_user
 from config import settings
 from billing import create_preapproval, get_preapproval, get_payment, activate_user_premium, deactivate_user_premium, verify_signature
+from billing import obter_cupom, calcular_valor_final
+from coupons import aplicar_desconto
 
 app = FastAPI(title="Caderno de Estudos API")
 
@@ -213,16 +215,49 @@ class BillingStatus(BaseModel):
     premium_until: Optional[str] = None
 
 
+class CupomValidarResponse(BaseModel):
+    codigo: str
+    percentual: int
+    desconto: float
+    valor_final: float
+    valor_original: float
+
+
+class PremiumRequest(BaseModel):
+    cupom: Optional[str] = None
+
+
 @app.post("/billing/premium", response_model=CheckoutResponse)
-def subscribe_premium(user: User = Depends(get_current_user)):
-    data = create_preapproval(user)
+def subscribe_premium(req: Optional[PremiumRequest] = None, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    cupom_codigo = (req.cupom if req and req.cupom else None) or None
+    data = create_preapproval(user, db, cupom_codigo)
     init_point = data.get("init_point")
     if not init_point:
         raise HTTPException(status_code=502, detail="Nao foi possivel gerar o checkout")
     return CheckoutResponse(
         init_point=init_point,
-        preapproval_id=(data.get("id") or None),
+        preapproval_id=(str(data["id"]) if data.get("id") else None),
     )
+
+
+@app.get("/billing/cupom/validar", response_model=CupomValidarResponse)
+def validar_cupom(codigo: str, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    cupom = obter_cupom(db, codigo)
+    if cupom is None:
+        raise HTTPException(status_code=404, detail="Cupom nao encontrado ou inativo")
+    base = float(settings.mp_premium_amount)
+    valores = aplicar_desconto(base, cupom.percentual)
+    return CupomValidarResponse(
+        codigo=cupom.codigo,
+        percentual=cupom.percentual,
+        desconto=valores["desconto"],
+        valor_final=valores["valor_final"],
+        valor_original=_money_round(base),
+    )
+
+
+def _money_round(v: float) -> float:
+    return round(float(v) + 1e-9, 2)
 
 
 @app.post("/billing/webhook")

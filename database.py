@@ -53,9 +53,45 @@ class Subscription(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class CadernoCupom(Base):
+    """Cupons de desconto proprios do Caderno (nao confundir com a tabela
+    generica `cupons` do SISGERSA). Percentual e um inteiro 0..100; nunca
+    usar 100% pois o Mercado Pago rejeita assinatura recorrente <= R$0.01."""
+    __tablename__ = "caderno_cupons"
+    id = Column(Integer, primary_key=True)
+    codigo = Column(String, unique=True, index=True, nullable=False)
+    percentual = Column(Integer, default=0, nullable=False)
+    ativo = Column(Boolean, default=True)
+    criado_em = Column(DateTime, default=datetime.utcnow)
+
+
+SEED_CUPONS = (("CADERNO50", 50), ("CADERNO80", 80))
+
+
+def _seed_cupons_sqlite():
+    """Insere os cupons padrao no SQLite (idempotente), caso ainda nao existam."""
+    from sqlalchemy import text
+    with SessionLocal() as s:
+        for codigo, percentual in SEED_CUPONS:
+            existe = s.execute(
+                text("SELECT 1 FROM caderno_cupons WHERE codigo = :c"), {"c": codigo}
+            ).first()
+            if not existe:
+                s.execute(
+                    text(
+                        "INSERT INTO caderno_cupons (codigo, percentual, ativo, criado_em) "
+                        "VALUES (:c, :p, TRUE, :d)"
+                    ),
+                    {"c": codigo, "p": percentual, "d": datetime.utcnow()},
+                )
+        s.commit()
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)
     _migrate()
+    if engine.dialect.name != "postgresql":
+        _seed_cupons_sqlite()
 
 
 def _migrate():
@@ -86,6 +122,25 @@ def _migrate():
                 )
                 """
             ))
+            conn.execute(text(
+                """
+                CREATE TABLE IF NOT EXISTS caderno_cupons (
+                    id SERIAL PRIMARY KEY,
+                    codigo VARCHAR UNIQUE NOT NULL,
+                    percentual INTEGER NOT NULL DEFAULT 0,
+                    ativo BOOLEAN DEFAULT TRUE,
+                    criado_em TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+                )
+                """
+            ))
+            for codigo, percentual in SEED_CUPONS:
+                conn.execute(text(
+                    """
+                    INSERT INTO caderno_cupons (codigo, percentual, ativo)
+                    VALUES (:codigo, :percentual, TRUE)
+                    ON CONFLICT (codigo) DO UPDATE SET percentual = EXCLUDED.percentual, ativo = TRUE
+                    """
+                ), {"codigo": codigo, "percentual": percentual})
         else:
             # SQLite: create_all ja reflete os novos models; nada a fazer aqui,
             # pois o SQLite nao suporta ALTER TABLE ... IF NOT EXISTS via SQL.

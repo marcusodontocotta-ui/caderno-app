@@ -7,10 +7,27 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from config import settings
-from database import Subscription, User
+from coupons import aplicar_desconto
+from database import CadernoCupom, Subscription, User
 
 MP_API = "https://api.mercadopago.com"
 PREMIUM_MONTHS = 1
+
+
+def obter_cupom(db: Session, codigo: str):
+    """Busca um cupom ativo por codigo (case-insensitive). None se inexistente/inativo."""
+    if not codigo:
+        return None
+    return (
+        db.query(CadernoCupom)
+        .filter(CadernoCupom.codigo == codigo.strip().upper(), CadernoCupom.ativo.is_(True))
+        .first()
+    )
+
+
+def calcular_valor_final(valor_base: float, cupom: CadernoCupom) -> dict:
+    """Calcula o valor com desconto de um cupom ja resolvido (ativo)."""
+    return aplicar_desconto(valor_base, cupom.percentual)
 
 
 def _headers() -> dict:
@@ -20,16 +37,31 @@ def _headers() -> dict:
     }
 
 
-def create_preapproval(user: User) -> dict:
-    """Cria uma assinatura (preapproval) recorrente mensal no Mercado Pago."""
+def create_preapproval(user: User, db: Session, cupom_codigo: str = None) -> dict:
+    """Cria uma assinatura (preapproval) recorrente mensal no Mercado Pago.
+
+    Aceita um codigo de cupom opcional; o desconto entra no transaction_amount.
+    Nunca permite valor final <= R$0.01 (Mercado Pago rejeita assinaturas tao baixas).
+    """
     if not settings.mp_access_token:
         raise HTTPException(status_code=503, detail="Mercado Pago nao configurado")
+
+    valor_mensal = float(settings.mp_premium_amount)
+    cupom_ok = False
+    if cupom_codigo:
+        cupom = obter_cupom(db, cupom_codigo)
+        if cupom is None:
+            raise HTTPException(status_code=404, detail="Cupom nao encontrado ou inativo")
+        valores = aplicar_desconto(valor_mensal, cupom.percentual)
+        valor_mensal = valores["valor_final"]
+        cupom_ok = True
+
     payload = {
         "reason": "Caderno de Estudos Premium",
         "auto_recurring": {
             "frequency": 1,
             "frequency_type": "months",
-            "transaction_amount": float(settings.mp_premium_amount),
+            "transaction_amount": valor_mensal,
             "currency_id": "BRL",
         },
         "payer_email": user.email,
@@ -44,6 +76,7 @@ def create_preapproval(user: User) -> dict:
         raise HTTPException(status_code=502, detail=f"Erro ao contactar Mercado Pago: {e}")
     if r.status_code not in (200, 201):
         raise HTTPException(status_code=502, detail=f"Mercado Pago erro {r.status_code}: {data}")
+    data["_cupom_aplicado"] = cupom_ok
     return data
 
 
