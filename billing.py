@@ -66,7 +66,7 @@ def create_preapproval(user: User, db: Session, cupom_codigo: str = None) -> dic
         },
         "payer_email": user.email,
         "back_url": settings.mp_back_url,
-        "notification_url": f"{settings.mp_back_url}/billing/webhook",
+        "notification_url": settings.mp_webhook_url,
         "external_reference": f"caderno:{user.id}",
     }
     try:

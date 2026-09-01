@@ -161,9 +161,27 @@ def delete_notebook(notebook_id: int, user: User = Depends(get_current_user), db
 
 
 # ---------------- Pages ----------------
+def _get_owned_page(db, user, notebook_id, page_id):
+    """Busca uma pagina garantindo que o caderno pai pertence ao usuario autenticado.
+
+    Retorna None caso a pagina nao exista OU nao pertenca a um caderno do usuario,
+    para que o chamador responda 404 sem vazar a existencia do recurso.
+    """
+    return (
+        db.query(Page)
+        .join(Notebook, Notebook.id == Page.notebook_id)
+        .filter(
+            Page.id == page_id,
+            Page.notebook_id == notebook_id,
+            Notebook.user_id == user.id,
+        )
+        .first()
+    )
+
+
 @app.put("/notebooks/{notebook_id}/pages/{page_id}", response_model=PageOut)
 def update_page(notebook_id: int, page_id: int, req: PageIn, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    page = db.query(Page).filter(Page.id == page_id, Page.notebook_id == notebook_id).first()
+    page = _get_owned_page(db, user, notebook_id, page_id)
     if not page:
         raise HTTPException(status_code=404, detail="Pagina nao encontrada")
     if req.text is not None:
@@ -191,7 +209,7 @@ def add_page(notebook_id: int, req: PageIn, user: User = Depends(get_current_use
 
 @app.delete("/notebooks/{notebook_id}/pages/{page_id}")
 def delete_page(notebook_id: int, page_id: int, user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-    page = db.query(Page).filter(Page.id == page_id, Page.notebook_id == notebook_id).first()
+    page = _get_owned_page(db, user, notebook_id, page_id)
     if not page:
         raise HTTPException(status_code=404, detail="Pagina nao encontrada")
     db.delete(page)
@@ -268,7 +286,11 @@ async def billing_webhook(request: Request):
     data_id = form.get("data.id", "")
 
     secret = (settings.mp_webhook_secret or "").strip()
-    if secret and not verify_signature(x_signature, str(data_id), secret):
+    if not secret:
+        # Fail-closed: sem secret configurado, recusamos a requisicao para nao
+        # aceitar webhooks sem assinatura (proteger a promocao de premium).
+        raise HTTPException(status_code=503, detail="Webhook nao configurado")
+    if not verify_signature(x_signature, str(data_id), secret):
         raise HTTPException(status_code=401, detail="Assinatura invalida")
 
     db = next(get_db())

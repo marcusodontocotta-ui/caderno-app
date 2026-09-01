@@ -5,3 +5,10 @@ __pycache__/
 caderno.db
 *.db
 .pytest_cache/
+
+# Scripts de rotacao de credenciais / segredos - nunca versionar
+rotate*.ps1
+*credential*.ps1
+*secret*.ps1
+*.env.local
+.env.*

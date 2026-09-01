@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     mp_webhook_secret: str = ""
     mp_premium_amount: str = "4.90"
     mp_back_url: str = "https://caderno-fy36.onrender.com"
+    mp_webhook_url: str = "https://caderno-app.onrender.com/billing/webhook"
 
     class Config:
         env_file = ".env"
