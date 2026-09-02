@@ -1,6 +1,7 @@
 import re
 import threading
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,16 +9,29 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, EmailStr, field_validator
 from typing import List, Optional
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from datetime import datetime
 
-from database import init_db, get_db, User, Notebook, Page, Subscription
+from database import init_db, get_db, User, Notebook, Page, Subscription, engine
 from auth import hash_password, verify_password, create_access_token, get_current_user
 from config import settings
 from billing import create_preapproval, get_preapproval, get_payment, activate_user_premium, deactivate_user_premium, verify_signature
 from billing import obter_cupom, calcular_valor_final
 from coupons import aplicar_desconto
 
-app = FastAPI(title="Caderno de Estudos API")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup/shutdown via lifespan (substitui o deprecado @app.on_event('startup')).
+
+    Mantém o comportamento anterior: `init_db()` (criação de tabelas + migrações
+    idempotentes + seed de cupons não-destrutivo) é executado na subida.
+    """
+    init_db()
+    yield
+
+
+app = FastAPI(title="Caderno de Estudos API", lifespan=lifespan)
 
 # ---------------------------------------------------------------------------
 # CORS restrito (MÉDIA-2): origens explicitas do front (e localhost p/ dev).
@@ -113,11 +127,6 @@ def _validate_password(p: str) -> None:
         )
     if not re.search(r"[A-Za-z]", p) or not re.search(r"[0-9]", p):
         raise ValueError("Senha fraca: use letras e numeros (minimo 8 caracteres).")
-
-
-@app.on_event("startup")
-def on_startup():
-    init_db()
 
 
 # ---------------- Schemas ----------------
@@ -375,7 +384,37 @@ def delete_page(notebook_id: int, page_id: int, user: User = Depends(get_current
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    """Liveness: sempre 200 se o processo está de pé (não derruba deploy).
+
+    Inclui o estado do banco no corpo para observabilidade, mas jamais responde
+    5xx aqui — um crash-loop por falha pontual do Postgres derrubaria o serviço.
+    Para checagem estrita do banco, use `/health/db`.
+    """
+    return {"status": "ok", "db": _check_db()}
+
+
+@app.get("/health/db")
+def health_db():
+    """Readiness do banco de dados.
+
+    Responde 200 quando o Postgres responde `SELECT 1` e 503 quando não. Este
+    endpoint NÃO é usado pelo healthcheck do Render (que aponta para `/health`),
+    então uma falha pontual do DB não causa restart/crash-loop; serve para
+    observabilidade e para carga/teste.
+    """
+    if _check_db() == "ok":
+        return {"db": "ok"}
+    raise HTTPException(status_code=503, detail="banco de dados indisponivel")
+
+
+def _check_db() -> str:
+    """Executa `SELECT 1` no engine atual. Retorna 'ok' ou 'error'."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return "ok"
+    except Exception:  # noqa: BLE001
+        return "error"
 
 
 # ---------------- Billing / Mercado Pago ----------------

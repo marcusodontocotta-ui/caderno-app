@@ -17,10 +17,18 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main as main_mod
-from main import app
+from main import app, hash_password, verify_password
 from config import settings
 from coupons import aplicar_desconto
 from database import SessionLocal, User
+
+
+def test_legacy_passlib_hash_still_verifies():
+    """BAIXA-5: hash gerado com passlib|bcrypt 4.0.1 (produção) valida no
+    novo código (bcrypt direto). Garante que logins antigos não quebram."""
+    legacy_hash = "$2b$12$nvXSVLHO4PgWVEBU0wySHu/aRC30zpdbv3wWblvBS9rRNb9lqdBTa"
+    assert verify_password("SenhaLegada123", legacy_hash) is True
+    assert verify_password("SenhaErrada", legacy_hash) is False
 
 
 @pytest.fixture(autouse=True)
@@ -56,7 +64,15 @@ def _auth_headers(c, email, password="Segredo123"):
 def test_health(client):
     r = client.get("/health")
     assert r.status_code == 200
-    assert r.json() == {"status": "ok"}
+    assert r.json()["status"] == "ok"
+    assert r.json()["db"] in ("ok", "error")
+
+
+def test_health_db_separate(client):
+    # /health/db não deve derrubar liveness: 200 quando o banco responde
+    r = client.get("/health/db")
+    assert r.status_code == 200
+    assert r.json() == {"db": "ok"}
 
 
 # --------------------------------------------------------------------------

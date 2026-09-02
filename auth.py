@@ -1,21 +1,38 @@
 from datetime import datetime, timedelta
+import bcrypt
 from jose import jwt
-from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
 from database import get_db, User
 from config import settings
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# BAIXA-5: removemos passlib (legado) e usamos bcrypt diretamente.
+# Compatibilidade garantida: hashes antigos do passlib são bcrypt puro
+# (`$2b$12$...`) e verificam com bcrypt.checkpw (testado e documentado).
+_BCRYPT_MAX_BYTES = 72
+
+
+def _bcrypt_password_bytes(password: str) -> bytes:
+    """Normaliza a senha para os 72 bytes máximos do algoritmo bcrypt.
+
+    Mantém o comportamento exato do passlib (truncate_error=False): somente os
+    primeiros 72 bytes participam do hash/verificação — senhas de usuários
+    antigos (hashadas via passlib) continuam validando sem alteração.
+    """
+    return password.encode("utf-8")[:_BCRYPT_MAX_BYTES]
 
 
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return bcrypt.hashpw(_bcrypt_password_bytes(password), bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    try:
+        return bcrypt.checkpw(_bcrypt_password_bytes(plain), hashed.encode("utf-8"))
+    except ValueError:
+        # hash malformado ou senha fora dos limites -> falha segura (nunca 500)
+        return False
 
 
 def create_access_token(user_id: int, token_version: int = 0) -> str:

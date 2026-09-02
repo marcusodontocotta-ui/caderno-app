@@ -6,7 +6,8 @@ Premium recorrente via **Mercado Pago** (preapproval + webhooks).
 
 - **Produção:** <https://caderno-app.onrender.com>
 - **Docs interativas (Swagger):** <https://caderno-app.onrender.com/docs>
-- **Healthcheck:** `GET /health` → `{"status":"ok"}`
+- **Healthcheck:** `GET /health` → `{"status":"ok","db":"ok|error"}` (liveness: sempre `200`; o estado do banco vai no corpo — não derruba o deploy)
+- **Readiness do banco:** `GET /health/db` → `200 {"db":"ok"}` ou `503` se o Postgres não responder (não é usado pelo healthcheck do Render; uso para observabilidade/testes)
 
 ---
 
@@ -53,6 +54,8 @@ pytest -q
 | `MP_BACK_URL` | No | `https://caderno-fy36.onrender.com` | URL de retorno do checkout. |
 | `MP_WEBHOOK_URL` | No | `https://caderno-app.onrender.com/billing/webhook` | URL de notificação enviada ao MP. |
 
+> **Hashing de senha (BAIXA-5):** o app usa **`bcrypt` diretamente** (`bcrypt==5.0.0`); o `passlib` foi removido. Hashes antigos (gerados com passlib|crypt) são bcrypt puro `$2b$12$...` e continuam validando com `bcrypt.checkpw` (teste de compatibilidade em `tests/test_api.py`). Reproduzimos o truncamento de 72 bytes do passlib (`auth.py:_bcrypt_password_bytes`) para não alterar o comportamento de senhas longas.
+
 ---
 
 ## Endpoints
@@ -74,7 +77,8 @@ pytest -q
 - `GET /billing/status` — `{ is_premium, premium_until }`.
 
 ### Outros
-- `GET /health` — healthcheck.
+- `GET /health` — liveness (sempre `200`; `db: "ok"|"error"` no corpo para observabilidade).
+- `GET /health/db` — readiness do banco (`200`/`503`). Endpoint separado para não causar crash-loop em falha pontual do Postgres.
 
 ---
 
@@ -86,13 +90,14 @@ pytest -q
 - **Sessão em cookie httpOnly** (`SameSite=Lax`, `Secure`) — token não fica no `localStorage`/leível por JS (MÉDIA-4). O header `Authorization: Bearer` ainda é aceito como fallback (compatibilidade).
 - **Webhook fail-closed** (segredo + assinatura HMAC-SHA256) (ALTA) e **erros do MP não vazam detalhes** (MÉDIA-7).
 - **Seed de cupons não-destrutivo** (`ON CONFLICT DO NOTHING` no Postgres) — desativação manual é preservada entre boots (MÉDIA-8).
+- **Hashing sem passlib** (bcrypt 5.0.0 direto, BAIXA-5) — compatível com hashes legados `$2b$`.
 
 ## Estrutura
 
 ```
 caderno-app/
-  main.py        # FastAPI (rotas, CORS, auth, rate-limit)
-  auth.py        # JWT + cookie httpOnly, hash de senha
+  main.py        # FastAPI (rotas, CORS, auth, rate-limit, lifespan startup, health/db)
+  auth.py        # JWT + cookie httpOnly, hash de senha (bcrypt direto)
   billing.py     # Mercado Pago (preapproval, webhook, cupons)
   coupons.py     # cálculo de desconto (protege contra valor <= R$ 0,01)
   database.py    # SQLAlchemy (users, notebooks, pages, subscriptions, cupons)

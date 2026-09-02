@@ -4,8 +4,11 @@ sqlalchemy==2.0.36
 psycopg2-binary==2.9.11
 pydantic==2.12.0
 pydantic-settings==2.7.1
-passlib[bcrypt]==1.7.4
-bcrypt==4.0.1
+# BAIXA-5: passlib foi removido — hashing agora usa bcrypt diretamente (auth.py).
+# Motivo: passlib==1.7.4 (abandonado) forçava bcrypt==4.0.1 (pin por
+# incompatibilidade com o atributo `bcrypt.__about__` removido nas versões novas).
+# Hashes antigos são bcrypt puro `$2b$` e continuam validando com bcrypt.checkpw.
+bcrypt==5.0.0
 python-jose[cryptography]==3.3.0
 python-multipart==0.0.20
 email-validator==2.2.0
