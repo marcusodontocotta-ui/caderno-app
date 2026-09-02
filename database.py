@@ -18,6 +18,7 @@ class User(Base):
     is_premium = Column(Boolean, default=False)
     premium_until = Column(DateTime, nullable=True)
     mp_preapproval_id = Column(String, nullable=True)
+    token_version = Column(Integer, default=0, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 
@@ -108,6 +109,9 @@ def _migrate():
                 "ALTER TABLE users ADD COLUMN IF NOT EXISTS mp_preapproval_id VARCHAR"
             ))
             conn.execute(text(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version INTEGER DEFAULT 0"
+            ))
+            conn.execute(text(
                 """
                 CREATE TABLE IF NOT EXISTS subscriptions (
                     id SERIAL PRIMARY KEY,
@@ -133,12 +137,18 @@ def _migrate():
                 )
                 """
             ))
+            # Seed idempotente e nao-destrutivo: utilizamos INSERT ... ON CONFLICT
+            # DO NOTHING para que uma desativacao manual (ativo=TRUE -> FALSE) feita
+            # por um operador persista entre boots. (Antes era DO UPDATE SET ativo=TRUE,
+            # o que reativava cupons desativados a cada deploy.) Caderno 50/80 sao
+            # criados ativos na primeira vez; se alguem os desativar manualmente, isso
+            # nao e revertido aqui.
             for codigo, percentual in SEED_CUPONS:
                 conn.execute(text(
                     """
                     INSERT INTO caderno_cupons (codigo, percentual, ativo)
                     VALUES (:codigo, :percentual, TRUE)
-                    ON CONFLICT (codigo) DO UPDATE SET percentual = EXCLUDED.percentual, ativo = TRUE
+                    ON CONFLICT (codigo) DO NOTHING
                     """
                 ), {"codigo": codigo, "percentual": percentual})
         else:

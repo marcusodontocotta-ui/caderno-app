@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import logging
 from datetime import datetime, timedelta
 
 import httpx
@@ -9,6 +10,8 @@ from sqlalchemy.orm import Session
 from config import settings
 from coupons import aplicar_desconto
 from database import CadernoCupom, Subscription, User
+
+logger = logging.getLogger("caderno.billing")
 
 MP_API = "https://api.mercadopago.com"
 PREMIUM_MONTHS = 1
@@ -73,9 +76,16 @@ def create_preapproval(user: User, db: Session, cupom_codigo: str = None) -> dic
         r = httpx.post(f"{MP_API}/preapproval", json=payload, headers=_headers(), timeout=20)
         data = r.json()
     except Exception as e:  # noqa
-        raise HTTPException(status_code=502, detail=f"Erro ao contactar Mercado Pago: {e}")
+        # Loga o detalhe interno; nao ecoa ao cliente (evita vazar conteudo/estrutura).
+        logger.exception("Erro ao contactar Mercado Pago (create_preapproval): %s", e)
+        raise HTTPException(status_code=502, detail="Nao foi possivel gerar o checkout. Tente novamente.")
     if r.status_code not in (200, 201):
-        raise HTTPException(status_code=502, detail=f"Mercado Pago erro {r.status_code}: {data}")
+        # Loga a resposta completa do MP internamente; retorna mensagem generica.
+        logger.error(
+            "Mercado Pago erro %s ao criar preapproval (user=%s): %s",
+            r.status_code, user.id, data,
+        )
+        raise HTTPException(status_code=502, detail="Nao foi possivel gerar o checkout. Tente novamente.")
     data["_cupom_aplicado"] = cupom_ok
     return data
 
